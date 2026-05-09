@@ -267,7 +267,11 @@ class AideLayout(discord.ui.LayoutView):
                 "## ◆  /stats\n"
                 "`rank` · `top` · `userinfo` · `serverinfo`\n\n"
                 "## ⚙️  /server\n"
-                "`setup` · `arrivee` · `depart` · `panel` · `reglement` · `verification` · `verification_quiz` · `backup` · `restore` · `autorole` · `rolemenu` · `tempvoice` · `antiraid` · `antispam` · `antinuke` · `antinuke_pause` · `logs_filter` · `suggestion` · `creersalon` · `creervoice` · `supprimersalon` · `creerole` · `addrole` · `removerole` · `roleall` · `roblox`\n\n"
+                "`setup` · `arrivee` · `depart` · `panel` · `reglement` · `verification` · `verification_quiz` · `backup` · `restore` · `tempvoice` · `suggestion` · `creersalon` · `creervoice` · `supprimersalon` · `roblox`\n\n"
+                "## ◉  /roles\n"
+                "`creerole` · `addrole` · `removerole` · `roleall` · `autorole` · `rolemenu`\n\n"
+                "## 🛡️  /protect\n"
+                "`antiraid` · `antispam` · `antinuke` · `antinuke_pause` · `logs_filter`\n\n"
                 "## 🎉  /events\n"
                 "`giveaway` · `reroll` · `poll` · `bingo` · `bingo_stop` · `trivia`"
             ),
@@ -2374,6 +2378,20 @@ async def stats_serverinfo(i: discord.Interaction):
 bot.tree.add_command(stats_group)
 
 # ─── /server ────────────────────────────────────────────────────────────
+class RolesGroup(app_commands.Group):
+    def __init__(self):
+        super().__init__(name="roles", description="◉ Gestion des rôles")
+
+roles_group = RolesGroup()
+
+
+class ProtectGroup(app_commands.Group):
+    def __init__(self):
+        super().__init__(name="protect", description="🛡️ Protection du serveur")
+
+protect_group = ProtectGroup()
+
+
 class ServerGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="server", description="⚙️ Configuration du serveur")
@@ -2673,13 +2691,13 @@ async def server_restore(i: discord.Interaction, nom: Optional[str]=None):
             except Exception: pass
     await i.followup.send(embed=ok("Restauré !", f"Rôles : **{r['roles']}** | Salons : **{r['channels']}**"))
 
-@server_group.command(name="autorole", description="Rôle automatique pour les nouveaux membres")
+@roles_group.command(name="autorole", description="Rôle automatique pour les nouveaux membres")
 @app_commands.describe(action="Ajouter ou retirer", role="Le rôle", reset="Supprimer tous")
 @app_commands.choices(action=[
     app_commands.Choice(name="Ajouter", value="add"),
     app_commands.Choice(name="Retirer", value="rem")])
 @app_commands.default_permissions(administrator=True)
-async def server_autorole(i: discord.Interaction, action: str="add",
+async def roles_autorole(i: discord.Interaction, action: str="add",
                            role: Optional[discord.Role]=None, reset: bool=False):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
@@ -2710,10 +2728,10 @@ async def server_autorole(i: discord.Interaction, action: str="add",
         else:
             await i.response.send_message(embed=inf("Pas trouvé"), ephemeral=True)
 
-@server_group.command(name="rolemenu", description="Créer un menu de sélection de rôles")
+@roles_group.command(name="rolemenu", description="Créer un menu de sélection de rôles")
 @app_commands.describe(titre="Titre du menu", roles="Mentions des rôles")
 @app_commands.default_permissions(administrator=True)
-async def server_rolemenu(i: discord.Interaction, titre: str, roles: str):
+async def roles_rolemenu(i: discord.Interaction, titre: str, roles: str):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
@@ -2750,10 +2768,10 @@ async def server_tempvoice(i: discord.Interaction, salon: discord.VoiceChannel):
     await i.response.send_message(embed=ok("Vocaux temporaires",
         f"Rejoins **{salon.name}** pour créer ton salon automatiquement !"))
 
-@server_group.command(name="antiraid", description="Configurer l'anti-raid")
+@protect_group.command(name="antiraid", description="Configurer l'anti-raid")
 @app_commands.describe(activer="Activer", seuil="Joins par 10s", action="kick ou ban")
 @app_commands.default_permissions(administrator=True)
-async def server_antiraid(i: discord.Interaction, activer: bool=True, seuil: int=5, action: str="kick"):
+async def protect_antiraid(i: discord.Interaction, activer: bool=True, seuil: int=5, action: str="kick"):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
@@ -2762,11 +2780,11 @@ async def server_antiraid(i: discord.Interaction, activer: bool=True, seuil: int
     await i.response.send_message(embed=emb("◈  Anti-Raid",
         f"**Statut :** {'✅ Activé' if activer else '❌ Désactivé'}\n**Seuil :** {seuil}/10s\n**Action :** {action}", C.NEON_PINK))
 
-@server_group.command(name="antispam", description="Configurer l'anti-spam")
+@protect_group.command(name="antispam", description="Configurer l'anti-spam")
 @app_commands.describe(activer="Activer", messages="Max messages", fenetre="Fenêtre secondes",
                         mentions="Max mentions", action="mute/kick/ban", duree_mute="Durée mute (min)")
 @app_commands.default_permissions(administrator=True)
-async def server_antispam(i: discord.Interaction, activer: bool=True, messages: int=5,
+async def protect_antispam(i: discord.Interaction, activer: bool=True, messages: int=5,
                            fenetre: int=5, mentions: int=5, action: str="mute", duree_mute: int=5):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
@@ -2777,11 +2795,11 @@ async def server_antispam(i: discord.Interaction, activer: bool=True, messages: 
     await i.response.send_message(embed=emb("◈  Anti-Spam",
         f"**Statut :** {'✅ Activé' if activer else '❌ Désactivé'}\n**Messages :** {messages}/{fenetre}s\n**Action :** {action}", C.NEON_PINK))
 
-@server_group.command(name="antinuke", description="Protection anti-nuke")
+@protect_group.command(name="antinuke", description="Protection anti-nuke")
 @app_commands.describe(activer="Activer", seuil="Actions max/10s", action="kick ou ban",
                         whitelist_add="ID à whitelister", whitelist_rem="ID à retirer")
 @app_commands.default_permissions(administrator=True)
-async def server_antinuke(i: discord.Interaction, activer: bool=True, seuil: int=5,
+async def protect_antinuke(i: discord.Interaction, activer: bool=True, seuil: int=5,
                            action: str="kick", whitelist_add: Optional[str]=None,
                            whitelist_rem: Optional[str]=None):
     # Vérification permission réelle
@@ -2874,10 +2892,10 @@ async def server_supprimersalon(i: discord.Interaction, salon: discord.TextChann
     except discord.Forbidden:
         await i.response.send_message(embed=er("Permission manquante"), ephemeral=True)
 
-@server_group.command(name="creerole", description="Créer un rôle")
+@roles_group.command(name="creerole", description="Créer un rôle")
 @app_commands.describe(nom="Nom du rôle", couleur="Couleur hex (ex: #FF00FF)")
 @app_commands.default_permissions(manage_roles=True)
-async def server_creerole(i: discord.Interaction, nom: str, couleur: str="#00FFFF"):
+async def roles_creerole(i: discord.Interaction, nom: str, couleur: str="#00FFFF"):
     # Vérification permission réelle
     if not i.user.guild_permissions.manage_roles:
         return await i.response.send_message(
@@ -2889,10 +2907,10 @@ async def server_creerole(i: discord.Interaction, nom: str, couleur: str="#00FFF
     except discord.Forbidden:
         await i.response.send_message(embed=er("Permission manquante"), ephemeral=True)
 
-@server_group.command(name="addrole", description="Ajouter un rôle à un membre")
+@roles_group.command(name="addrole", description="Ajouter un rôle à un membre")
 @app_commands.describe(membre="Le membre", role="Le rôle")
 @app_commands.default_permissions(manage_roles=True)
-async def server_addrole(i: discord.Interaction, membre: discord.Member, role: discord.Role):
+async def roles_addrole(i: discord.Interaction, membre: discord.Member, role: discord.Role):
     # Vérification RÉELLE côté code — default_permissions seul ne suffit pas
     if not i.user.guild_permissions.manage_roles:
         return await i.response.send_message(embed=er("Permission refusée", "Tu n'as pas la permission `Gérer les rôles`."), ephemeral=True)
@@ -2905,10 +2923,10 @@ async def server_addrole(i: discord.Interaction, membre: discord.Member, role: d
     except discord.Forbidden:
         await i.response.send_message(embed=er("Permission manquante"), ephemeral=True)
 
-@server_group.command(name="removerole", description="Retirer un rôle d'un membre")
+@roles_group.command(name="removerole", description="Retirer un rôle d'un membre")
 @app_commands.describe(membre="Le membre", role="Le rôle")
 @app_commands.default_permissions(manage_roles=True)
-async def server_removerole(i: discord.Interaction, membre: discord.Member, role: discord.Role):
+async def roles_removerole(i: discord.Interaction, membre: discord.Member, role: discord.Role):
     if not i.user.guild_permissions.manage_roles:
         return await i.response.send_message(embed=er("Permission refusée", "Tu n'as pas la permission `Gérer les rôles`."), ephemeral=True)
     if role >= i.user.top_role and i.user.id != i.guild.owner_id:
@@ -2919,10 +2937,10 @@ async def server_removerole(i: discord.Interaction, membre: discord.Member, role
     except discord.Forbidden:
         await i.response.send_message(embed=er("Permission manquante"), ephemeral=True)
 
-@server_group.command(name="roleall", description="Donner un rôle à tous les membres")
+@roles_group.command(name="roleall", description="Donner un rôle à tous les membres")
 @app_commands.describe(role="Le rôle")
 @app_commands.default_permissions(administrator=True)
-async def server_roleall(i: discord.Interaction, role: discord.Role):
+async def roles_roleall(i: discord.Interaction, role: discord.Role):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
@@ -3009,6 +3027,8 @@ async def server_roblox(i: discord.Interaction,
 
 
 bot.tree.add_command(server_group)
+bot.tree.add_command(roles_group)
+bot.tree.add_command(protect_group)
 
 # ─── /events ────────────────────────────────────────────────────────────
 class EventsGroup(app_commands.Group):
@@ -3391,10 +3411,10 @@ async def owner_dmall_ultime(i: discord.Interaction, message: str):
 # ══════════════════════════════════════════════
 
 # ─── Anti-nuke pause ────────────────────────────
-@server_group.command(name="antinuke_pause", description="Pause temporaire de l'anti-nuke")
+@protect_group.command(name="antinuke_pause", description="Pause temporaire de l'anti-nuke")
 @app_commands.describe(minutes="Durée de la pause en minutes (0 = annuler)")
 @app_commands.default_permissions(administrator=True)
-async def server_antinuke_pause(i: discord.Interaction, minutes: int = 30):
+async def protect_antinuke_pause(i: discord.Interaction, minutes: int = 30):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
@@ -3412,10 +3432,10 @@ async def server_antinuke_pause(i: discord.Interaction, minutes: int = 30):
 # ─── Logs filter (toggle types) ─────────────────
 LOG_TYPES = ["ban", "kick", "mute", "warn", "unban", "purge", "tempban", "antinuke", "antiraid", "antispam"]
 
-@server_group.command(name="logs_filter", description="Choisir quels types d'événements logger")
+@protect_group.command(name="logs_filter", description="Choisir quels types d'événements logger")
 @app_commands.describe(types="Liste séparée par virgules (ex: ban,kick,mute) — 'all' pour tout, 'reset' pour défaut")
 @app_commands.default_permissions(administrator=True)
-async def server_logs_filter(i: discord.Interaction, types: str = "all"):
+async def protect_logs_filter(i: discord.Interaction, types: str = "all"):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
