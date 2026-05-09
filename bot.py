@@ -1331,11 +1331,34 @@ def _get_roblox_activity(member: discord.Member):
 
 def _get_game_name(act) -> str:
     """Extrait le nom du jeu depuis une activité Roblox."""
-    # Roblox met le nom du jeu dans 'details' ou 'state'
-    details = getattr(act, 'details', None)
-    state   = getattr(act, 'state', None)
+    # Discord/Roblox met le nom du jeu dans différents champs selon la version
+    details = getattr(act, 'details', None)   # ex: "Playing Adopt Me!"
+    state   = getattr(act, 'state', None)     # ex: "Adopt Me!"
+    large_text = getattr(act, 'large_image_text', None)  # parfois le nom du jeu ici
+    small_text = getattr(act, 'small_image_text', None)
     name    = getattr(act, 'name', None)
-    return details or state or name or "Roblox"
+    # Priorité : details > large_text > state > small_text > name
+    return details or large_text or state or small_text or name or "Roblox"
+
+def _get_roblox_join_url(act) -> str | None:
+    """Tente d'extraire un lien pour rejoindre le jeu Roblox."""
+    # Discord Activity peut avoir des boutons avec des URLs
+    buttons = getattr(act, 'buttons', None)
+    if buttons:
+        for btn in buttons:
+            if isinstance(btn, str) and btn.startswith("http"):
+                return btn
+            if isinstance(btn, dict):
+                url = btn.get("url", "")
+                if url and "roblox.com" in url:
+                    return url
+    # Fallback : construire l'URL depuis le party_id si dispo
+    party = getattr(act, 'party', None)
+    if party:
+        party_id = party.get("id", "")
+        if party_id:
+            return f"https://www.roblox.com/games/{party_id}"
+    return None
 
 @bot.event
 async def on_presence_update(before: discord.Member, after: discord.Member):
@@ -1360,16 +1383,33 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
     # Connexion Roblox
     if not act_before and act_after:
         game_name = _get_game_name(act_after)
+        join_url  = _get_roblox_join_url(act_after)
+        # Infos supplémentaires depuis l'activité
+        large_img = getattr(act_after, 'large_image_url', None)
+        party     = getattr(act_after, 'party', None)
+        party_size = None
+        if party and isinstance(party, dict):
+            sz = party.get("size", None)
+            if sz and isinstance(sz, (list, tuple)) and len(sz) == 2:
+                party_size = f"{sz[0]}/{sz[1]}"
+
+        desc = f"{after.mention} vient de se connecter sur **Roblox** !\n\n"
+        desc += f"🎮 **Jeu :** {game_name}\n"
+        if party_size:
+            desc += f"👥 **Joueurs :** {party_size}\n"
+        if join_url:
+            desc += f"\n[🔗 Rejoindre la partie]({join_url})"
+
         e = discord.Embed(
-            title="🎮  Connexion Roblox",
-            description=(
-                f"{after.mention} vient de se connecter sur **Roblox** !\n\n"
-                f"**Jeu :** {game_name}"
-            ),
+            title="🟢  Connexion Roblox",
+            description=desc,
             color=C.NEON_GREEN,
             timestamp=datetime.now(timezone.utc)
         )
         e.set_thumbnail(url=after.display_avatar.url)
+        if large_img:
+            try: e.set_image(url=large_img)
+            except Exception: pass
         e.set_footer(text=f"AEGIS AI  ◈  {after.guild.name}")
         try: await ch.send(embed=e)
         except Exception: pass
@@ -1377,12 +1417,13 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
     # Déconnexion Roblox
     elif act_before and not act_after:
         game_name = _get_game_name(act_before)
+        desc = (
+            f"{after.mention} s'est déconnecté de **Roblox**.\n\n"
+            f"🎮 **Dernier jeu :** {game_name}"
+        )
         e = discord.Embed(
             title="🔴  Déconnexion Roblox",
-            description=(
-                f"{after.mention} s'est déconnecté de **Roblox**.\n\n"
-                f"**Dernier jeu :** {game_name}"
-            ),
+            description=desc,
             color=C.NEON_RED,
             timestamp=datetime.now(timezone.utc)
         )
@@ -1395,13 +1436,15 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
     elif act_before and act_after:
         game_before = _get_game_name(act_before)
         game_after  = _get_game_name(act_after)
+        join_url    = _get_roblox_join_url(act_after)
         if game_before != game_after:
             e = discord.Embed(
                 title="🔄  Changement de jeu Roblox",
                 description=(
                     f"{after.mention} a changé de jeu sur **Roblox** !\n\n"
-                    f"**Avant :** {game_before}\n"
-                    f"**Maintenant :** {game_after}"
+                    f"🎮 **Avant :** {game_before}\n"
+                    f"🎮 **Maintenant :** {game_after}"
+                    + (f"\n\n[🔗 Rejoindre la partie]({join_url})" if join_url else "")
                 ),
                 color=C.NEON_GOLD,
                 timestamp=datetime.now(timezone.utc)
@@ -3069,10 +3112,23 @@ async def server_roblox_test(i: discord.Interaction):
     # Vérifier les activités actuelles du membre pour debug
     activities_info = []
     for act in i.user.activities:
-        app_id = getattr(act, "application_id", None)
-        name   = getattr(act, "name", "?")
-        atype  = type(act).__name__
-        activities_info.append(f"`{atype}` — {name} (app_id: {app_id})")
+        app_id   = getattr(act, "application_id", None)
+        name     = getattr(act, "name", "?")
+        details  = getattr(act, "details", None)
+        state    = getattr(act, "state", None)
+        lg_text  = getattr(act, "large_image_text", None)
+        sm_text  = getattr(act, "small_image_text", None)
+        buttons  = getattr(act, "buttons", None)
+        party    = getattr(act, "party", None)
+        atype    = type(act).__name__
+        info = f"`{atype}` **{name}** (id:{app_id})"
+        if details: info += f"\n  details: {details}"
+        if state:   info += f"\n  state: {state}"
+        if lg_text: info += f"\n  large_text: {lg_text}"
+        if sm_text: info += f"\n  small_text: {sm_text}"
+        if buttons: info += f"\n  buttons: {buttons}"
+        if party:   info += f"\n  party: {party}"
+        activities_info.append(info)
     activities_str = "\n".join(activities_info) if activities_info else "Aucune activité détectée"
     # Message test
     e_test = discord.Embed(
