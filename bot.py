@@ -467,6 +467,8 @@ class AvatarLayout(discord.ui.LayoutView):
 #  BOT
 # ══════════════════════════════════════════════
 intents = discord.Intents.all()
+intents.presences = True   # OBLIGATOIRE pour on_presence_update
+intents.members   = True   # OBLIGATOIRE pour voir les membres
 
 class Aegis(commands.Bot):
     def __init__(self):
@@ -1305,16 +1307,35 @@ class ReglModal(discord.ui.Modal, title="✍️ Règlement"):
 # ══════════════════════════════════════════════
 #  ROBLOX ACTIVITY TRACKER
 # ══════════════════════════════════════════════
-ROBLOX_APP_ID = 356875221078245376  # ID officiel de Roblox sur Discord
+# IDs connus de Roblox sur Discord (varie selon plateforme)
+ROBLOX_APP_IDS = {
+    356875221078245376,  # Roblox principal
+    1069849645256249344, # Roblox mobile
+}
+ROBLOX_NAMES = {"roblox"}  # noms en minuscules à matcher
 
 def _get_roblox_activity(member: discord.Member):
     """Retourne l'activité Roblox du membre si détectée, sinon None."""
+    if not member.activities:
+        return None
     for act in member.activities:
-        if isinstance(act, discord.Activity) and act.application_id == ROBLOX_APP_ID:
+        # Méthode 1 : par application_id (le plus fiable)
+        app_id = getattr(act, 'application_id', None)
+        if app_id and app_id in ROBLOX_APP_IDS:
             return act
-        if isinstance(act, discord.Game) and "roblox" in act.name.lower():
+        # Méthode 2 : par nom (fallback)
+        name = getattr(act, 'name', '') or ''
+        if name.lower() in ROBLOX_NAMES or 'roblox' in name.lower():
             return act
     return None
+
+def _get_game_name(act) -> str:
+    """Extrait le nom du jeu depuis une activité Roblox."""
+    # Roblox met le nom du jeu dans 'details' ou 'state'
+    details = getattr(act, 'details', None)
+    state   = getattr(act, 'state', None)
+    name    = getattr(act, 'name', None)
+    return details or state or name or "Roblox"
 
 @bot.event
 async def on_presence_update(before: discord.Member, after: discord.Member):
@@ -1333,9 +1354,12 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
     act_before = _get_roblox_activity(before)
     act_after  = _get_roblox_activity(after)
 
+    # Debug log pour vérifier que l'event se déclenche
+    logger.debug(f"[Roblox] {after.display_name} | before={act_before} after={act_after}")
+
     # Connexion Roblox
     if not act_before and act_after:
-        game_name = getattr(act_after, 'details', None) or getattr(act_after, 'state', None) or "un jeu"
+        game_name = _get_game_name(act_after)
         e = discord.Embed(
             title="🎮  Connexion Roblox",
             description=(
@@ -1352,7 +1376,7 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
 
     # Déconnexion Roblox
     elif act_before and not act_after:
-        game_name = getattr(act_before, 'details', None) or getattr(act_before, 'state', None) or "un jeu"
+        game_name = _get_game_name(act_before)
         e = discord.Embed(
             title="🔴  Déconnexion Roblox",
             description=(
@@ -1369,8 +1393,8 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
 
     # Changement de jeu Roblox
     elif act_before and act_after:
-        game_before = getattr(act_before, 'details', None) or getattr(act_before, 'state', None) or "?"
-        game_after  = getattr(act_after,  'details', None) or getattr(act_after,  'state', None) or "?"
+        game_before = _get_game_name(act_before)
+        game_after  = _get_game_name(act_after)
         if game_before != game_after:
             e = discord.Embed(
                 title="🔄  Changement de jeu Roblox",
@@ -3024,6 +3048,52 @@ async def server_roblox(i: discord.Interaction,
         f"⚠️ Nécessite que les membres aient **Activité de jeu** activée dans Discord."
     )
     await i.response.send_message(embed=ok("Roblox Tracker configuré !", desc))
+
+
+@server_group.command(name="roblox_test", description="Tester le tracker Roblox (envoie un message test)")
+@app_commands.default_permissions(administrator=True)
+async def server_roblox_test(i: discord.Interaction):
+    """Envoie un message test dans le salon configuré pour vérifier que tout fonctionne."""
+    if not i.user.guild_permissions.administrator:
+        return await i.response.send_message(
+            embed=er("Permission refusée", "Tu n'as pas la permission `Administrateur`."), ephemeral=True)
+    gid = str(i.guild.id)
+    cfg = bot.roblox_cfg.get(gid)
+    if not cfg:
+        return await i.response.send_message(
+            embed=er("Non configuré", "Configure d'abord avec `/server roblox salon:#salon`"), ephemeral=True)
+    ch = i.guild.get_channel(int(cfg["channel_id"]))
+    if not ch:
+        return await i.response.send_message(
+            embed=er("Salon introuvable", "Le salon configuré n'existe plus."), ephemeral=True)
+    # Vérifier les activités actuelles du membre pour debug
+    activities_info = []
+    for act in i.user.activities:
+        app_id = getattr(act, "application_id", None)
+        name   = getattr(act, "name", "?")
+        atype  = type(act).__name__
+        activities_info.append(f"`{atype}` — {name} (app_id: {app_id})")
+    activities_str = "\n".join(activities_info) if activities_info else "Aucune activité détectée"
+    # Message test
+    e_test = discord.Embed(
+        title="🧪  Test Roblox Tracker",
+        description=(
+            f"**Envoyé par :** {i.user.mention}\n"
+            f"**Salon :** {ch.mention}\n\n"
+            f"**Tes activités Discord actuelles :**\n{activities_str}\n\n"
+            f"Si Roblox n'apparaît pas ci-dessus :\n"
+            f"▸ Active **Activité de jeu** dans Paramètres Discord → Confidentialité\n"
+            f"▸ Active **Presence Intent** sur discord.com/developers → ton bot → Bot"
+        ),
+        color=C.NEON_GOLD
+    )
+    e_test.set_thumbnail(url=i.user.display_avatar.url)
+    e_test.set_footer(text="AEGIS AI  ◈  Test Roblox Tracker")
+    await ch.send(embed=e_test)
+    await i.response.send_message(
+        embed=ok("Message test envoyé !", f"Vérifie {ch.mention}\n\nTes activités : {activities_str}"),
+        ephemeral=True
+    )
 
 
 bot.tree.add_command(server_group)
