@@ -43,7 +43,7 @@ PERSIST_KEYS = [
     'giveaways', 'polls', 'warnings', 'xp_data', 'arrivee', 'depart_ch',
     'auto_roles', 'verif_roles', 'logs_ch', 'ticket_cfg', 'temp_voices',
     'raid_cfg', 'spam_cfg', 'nuke_cfg', 'backups', 'verif_quiz',
-    'logs_filters', 'tempbans', 'mod_history', 'nuke_paused_until', 'rolemenu_cfg',
+    'logs_filters', 'tempbans', 'mod_history', 'nuke_paused_until', 'rolemenu_cfg', 'roblox_cfg',
 ]
 
 def _load_data() -> dict:
@@ -267,7 +267,7 @@ class AideLayout(discord.ui.LayoutView):
                 "## ◆  /stats\n"
                 "`rank` · `top` · `userinfo` · `serverinfo`\n\n"
                 "## ⚙️  /server\n"
-                "`setup` · `arrivee` · `depart` · `panel` · `reglement` · `verification` · `verification_quiz` · `backup` · `restore` · `autorole` · `rolemenu` · `tempvoice` · `antiraid` · `antispam` · `antinuke` · `antinuke_pause` · `logs_filter` · `suggestion` · `creersalon` · `creervoice` · `supprimersalon` · `creerole` · `addrole` · `removerole` · `roleall`\n\n"
+                "`setup` · `arrivee` · `depart` · `panel` · `reglement` · `verification` · `verification_quiz` · `backup` · `restore` · `autorole` · `rolemenu` · `tempvoice` · `antiraid` · `antispam` · `antinuke` · `antinuke_pause` · `logs_filter` · `suggestion` · `creersalon` · `creervoice` · `supprimersalon` · `creerole` · `addrole` · `removerole` · `roleall` · `roblox`\n\n"
                 "## 🎉  /events\n"
                 "`giveaway` · `reroll` · `poll` · `bingo` · `bingo_stop` · `trivia`"
             ),
@@ -492,6 +492,7 @@ class Aegis(commands.Bot):
         self.backups     = {}
         self.verif_quiz  = {}
         self.rolemenu_cfg = {}
+        self.roblox_cfg  = {}   # {gid: {channel_id, members: [uid,...]}}
         self._join_cache   = {}
         self._remove_cache = {}
         self.ai_memory: dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
@@ -1106,18 +1107,46 @@ class TicketBtn(discord.ui.Button):
             return await i.response.send_message("Tu as déjà un ticket ouvert.", ephemeral=True)
         await i.response.defer(ephemeral=True)
         try:
-            cat = discord.utils.get(i.guild.categories, name="⊠ Tickets") or \
-                  await i.guild.create_category("⊠ Tickets", overwrites={
-                      i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                      i.guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True)})
-            ow = {i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                  i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
-                  i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
+            # Utiliser la catégorie configurée OU créer "⊠ Tickets" par défaut
+            cat_id = cfg.get("cat_id")
+            cat = i.guild.get_channel(int(cat_id)) if cat_id else None
+            if not cat:
+                cat = discord.utils.get(i.guild.categories, name="⊠ Tickets") or \
+                      await i.guild.create_category("⊠ Tickets", overwrites={
+                          i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                          i.guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True)})
+            ow = {
+                i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+                i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, embed_links=True)
+            }
             if cfg.get("sr"):
                 sr = i.guild.get_role(cfg["sr"])
-                if sr: ow[sr] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                if sr: ow[sr] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
             ch = await i.guild.create_text_channel(name, category=cat, overwrites=ow)
-            e = emb(f"⊠  Ticket", f"Bienvenue {i.user.mention}\nDécris ton problème.", C.NEON_CYAN)
+            # Embed du ticket avec thumbnail (image en haut à droite)
+            e = discord.Embed(
+                title=f"⊠  Ticket — {i.user.display_name}",
+                description=(
+                    f"Bienvenue {i.user.mention} !\n\n"
+                    f"{cfg.get('msg', 'Décris ton problème ci-dessous et le staff te répondra rapidement.')}\n\n"
+                    f"─────────────────────\n"
+                    f"**Ouvert le** <t:{int(datetime.now(timezone.utc).timestamp())}:F>"
+                ),
+                color=C.NEON_CYAN,
+                timestamp=datetime.now(timezone.utc)
+            )
+            # Image en haut à droite (thumbnail)
+            thumb = cfg.get("thumb")
+            if thumb:
+                e.set_thumbnail(url=thumb)
+            else:
+                e.set_thumbnail(url=i.user.display_avatar.url)
+            # Bannière en bas (image principale)
+            banner = cfg.get("banner")
+            if banner:
+                e.set_image(url=banner)
+            e.set_footer(text=f"AEGIS AI  ◈  {i.guild.name}")
             await ch.send(embed=e, view=CloseView())
             await i.followup.send(f"✅ Ticket créé : {ch.mention}", ephemeral=True)
         except Exception as ex:
@@ -1268,6 +1297,92 @@ class ReglModal(discord.ui.Modal, title="✍️ Règlement"):
         await i.response.defer(ephemeral=True)
         await i.channel.send(embed=e, view=RulesView() if self.btn else None)
         await i.followup.send(embed=ok("Règlement envoyé !"), ephemeral=True)
+
+# ══════════════════════════════════════════════
+#  ROBLOX ACTIVITY TRACKER
+# ══════════════════════════════════════════════
+ROBLOX_APP_ID = 356875221078245376  # ID officiel de Roblox sur Discord
+
+def _get_roblox_activity(member: discord.Member):
+    """Retourne l'activité Roblox du membre si détectée, sinon None."""
+    for act in member.activities:
+        if isinstance(act, discord.Activity) and act.application_id == ROBLOX_APP_ID:
+            return act
+        if isinstance(act, discord.Game) and "roblox" in act.name.lower():
+            return act
+    return None
+
+@bot.event
+async def on_presence_update(before: discord.Member, after: discord.Member):
+    """Détecte connexion/déconnexion Roblox et envoie un message dans le salon configuré."""
+    if after.bot: return
+    gid = str(after.guild.id)
+    cfg = bot.roblox_cfg.get(gid)
+    if not cfg: return
+    # Vérifier si le membre est dans la liste de suivi (liste vide = tous les membres)
+    watched = cfg.get("members", [])
+    if watched and after.id not in watched: return
+
+    ch = after.guild.get_channel(int(cfg["channel_id"]))
+    if not ch: return
+
+    act_before = _get_roblox_activity(before)
+    act_after  = _get_roblox_activity(after)
+
+    # Connexion Roblox
+    if not act_before and act_after:
+        game_name = getattr(act_after, 'details', None) or getattr(act_after, 'state', None) or "un jeu"
+        e = discord.Embed(
+            title="🎮  Connexion Roblox",
+            description=(
+                f"{after.mention} vient de se connecter sur **Roblox** !\n\n"
+                f"**Jeu :** {game_name}"
+            ),
+            color=C.NEON_GREEN,
+            timestamp=datetime.now(timezone.utc)
+        )
+        e.set_thumbnail(url=after.display_avatar.url)
+        e.set_footer(text=f"AEGIS AI  ◈  {after.guild.name}")
+        try: await ch.send(embed=e)
+        except Exception: pass
+
+    # Déconnexion Roblox
+    elif act_before and not act_after:
+        game_name = getattr(act_before, 'details', None) or getattr(act_before, 'state', None) or "un jeu"
+        e = discord.Embed(
+            title="🔴  Déconnexion Roblox",
+            description=(
+                f"{after.mention} s'est déconnecté de **Roblox**.\n\n"
+                f"**Dernier jeu :** {game_name}"
+            ),
+            color=C.NEON_RED,
+            timestamp=datetime.now(timezone.utc)
+        )
+        e.set_thumbnail(url=after.display_avatar.url)
+        e.set_footer(text=f"AEGIS AI  ◈  {after.guild.name}")
+        try: await ch.send(embed=e)
+        except Exception: pass
+
+    # Changement de jeu Roblox
+    elif act_before and act_after:
+        game_before = getattr(act_before, 'details', None) or getattr(act_before, 'state', None) or "?"
+        game_after  = getattr(act_after,  'details', None) or getattr(act_after,  'state', None) or "?"
+        if game_before != game_after:
+            e = discord.Embed(
+                title="🔄  Changement de jeu Roblox",
+                description=(
+                    f"{after.mention} a changé de jeu sur **Roblox** !\n\n"
+                    f"**Avant :** {game_before}\n"
+                    f"**Maintenant :** {game_after}"
+                ),
+                color=C.NEON_GOLD,
+                timestamp=datetime.now(timezone.utc)
+            )
+            e.set_thumbnail(url=after.display_avatar.url)
+            e.set_footer(text=f"AEGIS AI  ◈  {after.guild.name}")
+            try: await ch.send(embed=e)
+            except Exception: pass
+
 
 # ══════════════════════════════════════════════
 #  SETUPS
@@ -2349,27 +2464,56 @@ async def server_depart(i: discord.Interaction, salon_id: str):
         await i.response.send_message(embed=er("ID invalide"), ephemeral=True)
 
 @server_group.command(name="panel", description="Créer un panel de tickets")
-@app_commands.describe(titre="Titre", description="Description", role_support="Rôle support", image="URL image/GIF")
+@app_commands.describe(
+    titre="Titre du panel",
+    description="Description du panel",
+    role_support="Rôle support (optionnel)",
+    banniere="URL image/GIF en bas du panel (bannière)",
+    thumbnail="URL image en haut à droite du ticket (logo du serveur par ex.)",
+    categorie="Catégorie où créer les tickets",
+    message_ticket="Message affiché à l'ouverture du ticket")
 @app_commands.default_permissions(administrator=True)
-async def server_panel(i: discord.Interaction, titre: str="Support",
+async def server_panel(i: discord.Interaction,
+                        titre: str="Support",
                         description: str="Clique pour ouvrir un ticket.",
                         role_support: Optional[discord.Role]=None,
-                        image: Optional[str]=None):
+                        banniere: Optional[str]=None,
+                        thumbnail: Optional[str]=None,
+                        categorie: Optional[discord.CategoryChannel]=None,
+                        message_ticket: Optional[str]=None):
     # Vérification permission réelle
     if not i.user.guild_permissions.administrator:
         return await i.response.send_message(
             embed=er("Permission refusée", "Tu n'as pas la permission `Administrateur`."), ephemeral=True)
-    bot.ticket_cfg[str(i.guild.id)] = {"sr": role_support.id if role_support else None}
     if not check_perms(i.channel, i.guild.me):
         return await i.response.send_message(embed=er("Accès refusé"), ephemeral=True)
+    # Sauvegarder config ticket complète
+    bot.ticket_cfg[str(i.guild.id)] = {
+        "sr":     role_support.id if role_support else None,
+        "cat_id": str(categorie.id) if categorie else None,
+        "banner": banniere or None,
+        "thumb":  thumbnail or None,
+        "msg":    message_ticket or "Décris ton problème ci-dessous et le staff te répondra rapidement."
+    }
+    _save_data()
     await i.response.defer(ephemeral=True)
-    e = emb(f"🎫  {titre}", description, C.NEON_CYAN)
-    if image:
-        if not any(image.lower().endswith(ext) for ext in ['.mp4','.mov','.webm','.avi']):
-            try: e.set_image(url=image)
+    # Embed du panel avec thumbnail en haut à droite
+    e = discord.Embed(title=f"🎫  {titre}", description=description, color=C.NEON_CYAN,
+                      timestamp=datetime.now(timezone.utc))
+    if thumbnail:
+        e.set_thumbnail(url=thumbnail)
+    if banniere:
+        if not any(banniere.lower().endswith(ext) for ext in ['.mp4','.mov','.webm','.avi']):
+            try: e.set_image(url=banniere)
             except Exception: pass
+    e.set_footer(text="AEGIS AI  ◈  Clique sur le bouton pour ouvrir un ticket")
     await i.channel.send(embed=e, view=TicketView())
-    await i.followup.send(embed=ok("Panel créé !"), ephemeral=True)
+    cfg_desc = []
+    if categorie: cfg_desc.append(f"**Catégorie :** {categorie.name}")
+    if role_support: cfg_desc.append(f"**Support :** {role_support.mention}")
+    if thumbnail: cfg_desc.append("**Thumbnail :** ✅")
+    if banniere: cfg_desc.append("**Bannière :** ✅")
+    await i.followup.send(embed=ok("Panel créé !", "\n".join(cfg_desc) if cfg_desc else None), ephemeral=True)
 
 @server_group.command(name="reglement", description="Envoyer le règlement")
 @app_commands.describe(type_reglement="Type", avec_bouton="Ajouter bouton d'acceptation", role="Rôle à l'acceptation")
@@ -2796,6 +2940,73 @@ async def server_roleall(i: discord.Interaction, role: discord.Role):
             try: await m.add_roles(role); count += 1; await asyncio.sleep(0.3)
             except Exception: pass
     await i.followup.send(embed=ok("Rôle donné à tous", f"{role.mention} — **{count}** membres"))
+
+@server_group.command(name="roblox", description="Configurer le tracker d'activité Roblox")
+@app_commands.describe(
+    salon="Salon où envoyer les notifications",
+    activer="Activer ou désactiver le tracker",
+    membre="Membre spécifique à surveiller (vide = tous les membres)")
+@app_commands.default_permissions(administrator=True)
+async def server_roblox(i: discord.Interaction,
+                         salon: Optional[discord.TextChannel]=None,
+                         activer: bool=True,
+                         membre: Optional[discord.Member]=None):
+    # Vérification permission réelle
+    if not i.user.guild_permissions.administrator:
+        return await i.response.send_message(
+            embed=er("Permission refusée", "Tu n'as pas la permission `Administrateur`."), ephemeral=True)
+    gid = str(i.guild.id)
+
+    # Désactiver
+    if not activer:
+        bot.roblox_cfg.pop(gid, None)
+        _save_data()
+        return await i.response.send_message(embed=ok("Roblox Tracker désactivé"), ephemeral=True)
+
+    # Activer — salon requis
+    if not salon:
+        existing = bot.roblox_cfg.get(gid)
+        if existing:
+            ch = i.guild.get_channel(int(existing["channel_id"]))
+            watched = existing.get("members", [])
+            desc = (
+                f"**Salon :** {ch.mention if ch else 'introuvable'}\n"
+                f"**Membres surveillés :** {len(watched) if watched else 'Tous'}\n"
+                f"**Statut :** ✅ Actif"
+            )
+            return await i.response.send_message(embed=inf("Roblox Tracker — Config actuelle", desc), ephemeral=True)
+        return await i.response.send_message(
+            embed=er("Salon requis", "Précise un salon avec `/server roblox salon:#salon`"), ephemeral=True)
+
+    # Mettre à jour la config
+    cfg = bot.roblox_cfg.setdefault(gid, {"channel_id": str(salon.id), "members": []})
+    cfg["channel_id"] = str(salon.id)
+
+    if membre:
+        watched = cfg.setdefault("members", [])
+        if membre.id in watched:
+            watched.remove(membre.id)
+            action = f"❌ {membre.mention} retiré de la surveillance"
+        else:
+            watched.append(membre.id)
+            action = f"✅ {membre.mention} ajouté à la surveillance"
+    else:
+        cfg["members"] = []  # Surveiller tout le monde
+        action = "✅ Tous les membres surveillés"
+
+    _save_data()
+
+    watched_count = len(cfg.get("members", []))
+    desc = (
+        f"**Salon :** {salon.mention}\n"
+        f"**Membres surveillés :** {watched_count if watched_count else 'Tous'}\n"
+        f"**Action :** {action}\n\n"
+        f"Le bot enverra un message dans {salon.mention} quand un membre\n"
+        f"se connecte ou se déconnecte de **Roblox** via Discord.\n\n"
+        f"⚠️ Nécessite que les membres aient **Activité de jeu** activée dans Discord."
+    )
+    await i.response.send_message(embed=ok("Roblox Tracker configuré !", desc))
+
 
 bot.tree.add_command(server_group)
 
