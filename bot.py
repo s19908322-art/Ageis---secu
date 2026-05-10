@@ -19,7 +19,11 @@ Requirements:
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import os, logging, asyncio, random, re, aiohttp, json
+import os, logging, asyncio, random, re, aiohttp
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None, json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from collections import defaultdict, deque
@@ -768,31 +772,37 @@ def _ydl_opts(client_list: list) -> dict:
 
 def _try_extract(opts: dict, query: str) -> dict | None:
     """Extrait les infos d'une piste (exécuté dans un thread)."""
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if info and 'entries' in info:
-            info = info['entries'][0] if info['entries'] else None
-        if not info:
-            return None
-        # Récupérer l'URL audio directe
-        url = info.get('url')
-        if not url:
-            # Chercher dans les formats
-            for fmt in reversed(info.get('formats', [])):
-                if fmt.get('acodec') != 'none' and fmt.get('url'):
-                    url = fmt['url']
-                    break
-        if not url:
-            return None
-        return {
-            'title':    info.get('title', '?'),
-            'url':      url,
-            'webpage':  info.get('webpage_url', ''),
-            'duration': info.get('duration', 0),
-            'thumb':    info.get('thumbnail', ''),
-            'src':      info.get('webpage_url') or query,
-            'extractor': info.get('extractor', '?'),
-        }
+    if yt_dlp is None:
+        return None
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if info and 'entries' in info:
+                info = info['entries'][0] if info['entries'] else None
+            if not info:
+                return None
+            # Récupérer l'URL audio directe
+            url = info.get('url')
+            if not url:
+                # Chercher dans les formats disponibles
+                for fmt in reversed(info.get('formats', [])):
+                    if fmt.get('acodec') != 'none' and fmt.get('url'):
+                        url = fmt['url']
+                        break
+            if not url:
+                return None
+            return {
+                'title':    info.get('title', '?'),
+                'url':      url,
+                'webpage':  info.get('webpage_url', ''),
+                'duration': info.get('duration', 0),
+                'thumb':    info.get('thumbnail', ''),
+                'src':      info.get('webpage_url') or query,
+                'extractor': info.get('extractor', '?'),
+            }
+    except Exception as e:
+        # Remonter l'erreur pour que fetch_track puisse logger
+        raise e
 
 
 async def fetch_track(query: str) -> dict | None:
@@ -802,10 +812,9 @@ async def fetch_track(query: str) -> dict | None:
     L'URL est TOUJOURS résolue juste avant la lecture (voir next_track)
     pour éviter les URLs expirées — c'est le fix principal du bug 30s.
     """
-    try:
-        import yt_dlp
-    except Exception as e:
-        logger.error(f"yt-dlp import: {e}"); return None
+    if yt_dlp is None:
+        logger.error("[music] yt-dlp non installé — pip install yt-dlp")
+        return None
 
     is_url   = query.startswith('http')
     last_err = None
@@ -845,21 +854,6 @@ async def fetch_track(query: str) -> dict | None:
     return None
 
 
-async def _resolve_url(track: dict) -> str | None:
-    """Résout une URL fraîche juste avant la lecture.
-    
-    C'est la clé du fix du bug 30s : les URLs YouTube expirent vite
-    sur les IPs datacenter. On les résout au dernier moment.
-    """
-    src   = track.get('src') or track.get('webpage') or track.get('title', '')
-    fresh = await fetch_track(src)
-    if fresh and fresh.get('url'):
-        track['url'] = fresh['url']
-        return fresh['url']
-    # Fallback sur l'URL existante
-    return track.get('url')
-
-
 async def next_track(gid: str):
     """Lance la piste suivante dans la file. Résout l'URL juste avant la lecture."""
     vc = bot.vc_pool.get(gid)
@@ -872,10 +866,11 @@ async def next_track(gid: str):
     track = q.pop(0)
     bot.now_playing[gid] = track
 
-    # Résoudre URL fraîche JUSTE avant de lancer FFmpeg
-    url = await _resolve_url(track)
+    # L'URL a déjà été résolue dans fetch_track (appelé par music_play)
+    # On utilise l'URL existante directement — plus fiable que de re-résoudre
+    url = track.get('url')
     if not url:
-        logger.error(f"[music] URL introuvable pour {track.get('title')}")
+        logger.error(f"[music] URL manquante pour {track.get('title', '?')}")
         if bot.queues.get(gid):
             await next_track(gid)
         return
