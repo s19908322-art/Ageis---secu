@@ -714,15 +714,17 @@ async def ask_groq(q: str, channel_id: str = None, system: str = None) -> str:
 # - reconnect* : permet à FFmpeg de se reconnecter si le stream YouTube coupe
 # - http_persistent 0 : désactive les connexions persistantes (évite le bug 30s sur datacenter)
 # - buffer_size : augmente le buffer pour éviter les coupures
+# Options FFmpeg — critique pour le streaming depuis Railway/datacenter
+# before_options = options AVANT le fichier source (input)
+# options        = options APRÈS le fichier source (output)
 FF = {
     'before_options': (
         '-reconnect 1 '
         '-reconnect_streamed 1 '
         '-reconnect_delay_max 5 '
-        '-http_persistent 0 '        # Fix bug 30s sur Railway/datacenter
-        '-bufsize 64k'               # Buffer plus grand
+        '-http_persistent 0'
     ),
-    'options': '-vn -b:a 128k'       # Audio seulement, bitrate fixe
+    'options': '-vn'
 }
 
 YT_COOKIES_PATH = os.environ.get('YT_COOKIES_PATH', '')
@@ -741,7 +743,7 @@ def _ydl_opts(client_list: list) -> dict:
     """Construit les options yt-dlp pour un client donné."""
     opts = {
         # Format audio uniquement, préférer opus/m4a pour la compatibilité FFmpeg
-        'format': 'bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio/best',
         'noplaylist':        True,
         'quiet':             True,
         'no_warnings':       True,
