@@ -703,46 +703,61 @@ async def ask_groq(q: str, channel_id: str = None, system: str = None) -> str:
 # ══════════════════════════════════════════════
 #  MUSIQUE
 # ══════════════════════════════════════════════
-FF = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
+# ══════════════════════════════════════════════
+#  MUSIQUE — Options FFmpeg
+# ══════════════════════════════════════════════
+# BEFORE_OPTIONS critique :
+# - reconnect* : permet à FFmpeg de se reconnecter si le stream YouTube coupe
+# - http_persistent 0 : désactive les connexions persistantes (évite le bug 30s sur datacenter)
+# - buffer_size : augmente le buffer pour éviter les coupures
+FF = {
+    'before_options': (
+        '-reconnect 1 '
+        '-reconnect_streamed 1 '
+        '-reconnect_delay_max 5 '
+        '-http_persistent 0 '        # Fix bug 30s sur Railway/datacenter
+        '-bufsize 64k'               # Buffer plus grand
+    ),
+    'options': '-vn -b:a 128k'       # Audio seulement, bitrate fixe
+}
 
-# Chemin optionnel vers un fichier cookies YouTube exporté
-# (sur Railway : variable d'env YT_COOKIES_PATH=/data/cookies.txt
-#  + monter le fichier sur le volume /data)
 YT_COOKIES_PATH = os.environ.get('YT_COOKIES_PATH', '')
 
-# Player clients à essayer dans l'ordre (2026 : YouTube bloque souvent
-# certains clients depuis les IPs datacenter type Railway/Heroku)
+# Clients YouTube à essayer dans l'ordre
+# tv_embedded et ios sont les plus fiables depuis les IPs datacenter
 _YT_CLIENTS = [
-    ['tv_embedded'],      # le plus fiable depuis fin 2024
-    ['ios'],              # bon fallback
-    ['mweb'],             # mobile web
-    ['web_safari'],
-    ['android_vr'],
+    ['tv_embedded'],
+    ['ios'],
+    ['mweb'],
+    ['android'],
+    ['web'],
 ]
 
-def _ydl_opts(client_list):
+def _ydl_opts(client_list: list) -> dict:
+    """Construit les options yt-dlp pour un client donné."""
     opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'default_search': 'ytsearch1',
-        'source_address': '0.0.0.0',
+        # Format audio uniquement, préférer opus/m4a pour la compatibilité FFmpeg
+        'format': 'bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best',
+        'noplaylist':        True,
+        'quiet':             True,
+        'no_warnings':       True,
+        'default_search':    'ytsearch1',
+        'source_address':    '0.0.0.0',
         'extractor_retries': 3,
-        'age_limit': 99,
-        'geo_bypass': True,
-        'skip_download': True,
-        'nocheckcertificate': True,
+        'age_limit':         99,
+        'geo_bypass':        True,
+        'skip_download':     True,
+        'nocheckcertificate':True,
+        # Désactiver le cache pour toujours avoir une URL fraîche
+        'no_cache_dir':      True,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                          'AppleWebKit/537.36 (KHTML, like Gecko) '
-                          'Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
         },
         'extractor_args': {
             'youtube': {
                 'player_client': client_list,
-                'player_skip': ['configs'],
+                'player_skip':   [],            # Ne rien skipper pour éviter les URLs courtes
             }
         },
     }
@@ -751,90 +766,134 @@ def _ydl_opts(client_list):
     return opts
 
 
-async def fetch_track(query: str):
-    """Cherche et résout une piste audio. Essaie plusieurs clients YouTube
-    puis retombe sur SoundCloud si tout YouTube est bloqué (Railway)."""
+def _try_extract(opts: dict, query: str) -> dict | None:
+    """Extrait les infos d'une piste (exécuté dans un thread)."""
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(query, download=False)
+        if info and 'entries' in info:
+            info = info['entries'][0] if info['entries'] else None
+        if not info:
+            return None
+        # Récupérer l'URL audio directe
+        url = info.get('url')
+        if not url:
+            # Chercher dans les formats
+            for fmt in reversed(info.get('formats', [])):
+                if fmt.get('acodec') != 'none' and fmt.get('url'):
+                    url = fmt['url']
+                    break
+        if not url:
+            return None
+        return {
+            'title':    info.get('title', '?'),
+            'url':      url,
+            'webpage':  info.get('webpage_url', ''),
+            'duration': info.get('duration', 0),
+            'thumb':    info.get('thumbnail', ''),
+            'src':      info.get('webpage_url') or query,
+            'extractor': info.get('extractor', '?'),
+        }
+
+
+async def fetch_track(query: str) -> dict | None:
+    """Cherche et résout une piste audio.
+    
+    Essaie plusieurs clients YouTube puis SoundCloud en fallback.
+    L'URL est TOUJOURS résolue juste avant la lecture (voir next_track)
+    pour éviter les URLs expirées — c'est le fix principal du bug 30s.
+    """
     try:
         import yt_dlp
     except Exception as e:
-        logger.error(f"yt-dlp import: {e}")
-        return None
+        logger.error(f"yt-dlp import: {e}"); return None
 
-    is_url = query.startswith('http')
+    is_url   = query.startswith('http')
     last_err = None
+    loop     = asyncio.get_event_loop()
 
-    def _try(opts, q):
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(q, download=False)
-            if info and 'entries' in info:
-                info = info['entries'][0] if info['entries'] else None
-            if not info or not info.get('url'):
-                return None
-            return {
-                'title':    info.get('title', '?'),
-                'url':      info.get('url'),
-                'webpage':  info.get('webpage_url', ''),
-                'duration': info.get('duration', 0),
-                'thumb':    info.get('thumbnail', ''),
-                'src':      info.get('webpage_url') or query,
-            }
-
-    loop = asyncio.get_event_loop()
-
-    # 1) Essais successifs sur YouTube avec différents clients
+    # 1) YouTube avec différents clients
     for clients in _YT_CLIENTS:
         try:
             opts = _ydl_opts(clients)
-            q = query if is_url else f"ytsearch1:{query}"
-            result = await loop.run_in_executor(None, lambda: _try(opts, q))
-            if result and result.get('url'):
-                logger.info(f"yt-dlp ok via {clients[0]}: {result['title'][:60]}")
+            q    = query if is_url else f"ytsearch1:{query}"
+            result = await loop.run_in_executor(None, lambda o=opts, qq=q: _try_extract(o, qq))
+            if result:
+                logger.info(f"[music] {clients[0]} ✓ {result['title'][:50]}")
                 return result
         except Exception as e:
             last_err = e
-            logger.warning(f"yt-dlp {clients[0]} fail: {str(e)[:120]}")
-            continue
+            logger.warning(f"[music] {clients[0]} ✗ {str(e)[:80]}")
 
-    # 2) Fallback SoundCloud (souvent OK même quand YouTube bloque Railway)
+    # 2) Fallback SoundCloud
     if not is_url:
         try:
-            opts = {
+            opts_sc = {
                 'format': 'bestaudio/best', 'noplaylist': True,
                 'quiet': True, 'no_warnings': True,
-                'default_search': 'scsearch1', 'skip_download': True,
-                'source_address': '0.0.0.0',
+                'skip_download': True, 'source_address': '0.0.0.0',
             }
             result = await loop.run_in_executor(
-                None, lambda: _try(opts, f"scsearch1:{query}"))
-            if result and result.get('url'):
-                logger.info(f"SoundCloud fallback ok: {result['title'][:60]}")
+                None, lambda: _try_extract(opts_sc, f"scsearch1:{query}"))
+            if result:
+                logger.info(f"[music] SoundCloud ✓ {result['title'][:50]}")
                 return result
         except Exception as e:
             last_err = e
-            logger.warning(f"soundcloud fail: {str(e)[:120]}")
+            logger.warning(f"[music] SoundCloud ✗ {str(e)[:80]}")
 
-    logger.error(f"fetch_track: tous les extracteurs ont échoué. "
-                 f"Dernière erreur: {str(last_err)[:200]}")
+    logger.error(f"[music] Tous les extracteurs ont échoué: {str(last_err)[:200]}")
     return None
 
+
+async def _resolve_url(track: dict) -> str | None:
+    """Résout une URL fraîche juste avant la lecture.
+    
+    C'est la clé du fix du bug 30s : les URLs YouTube expirent vite
+    sur les IPs datacenter. On les résout au dernier moment.
+    """
+    src   = track.get('src') or track.get('webpage') or track.get('title', '')
+    fresh = await fetch_track(src)
+    if fresh and fresh.get('url'):
+        track['url'] = fresh['url']
+        return fresh['url']
+    # Fallback sur l'URL existante
+    return track.get('url')
+
+
 async def next_track(gid: str):
-    vc = bot.vc_pool.get(gid); q = bot.queues.get(gid, [])
-    if not vc or not vc.is_connected(): bot.vc_pool.pop(gid, None); return
-    if not q: bot.now_playing[gid] = None; return
-    track = q.pop(0); bot.now_playing[gid] = track
-    try:
-        fresh = await fetch_track(track.get('src') or track.get('webpage') or track.get('title',''))
-        if fresh and fresh.get('url'): track['url'] = fresh['url']
-    except Exception: pass
-    try:
-        src = discord.FFmpegPCMAudio(track['url'], **FF)
-        vc.play(discord.PCMVolumeTransformer(src, 0.5),
-                after=lambda e: asyncio.run_coroutine_threadsafe(next_track(gid), bot.loop))
-    except Exception as e:
-        logger.error(f"next_track: {e}")
+    """Lance la piste suivante dans la file. Résout l'URL juste avant la lecture."""
+    vc = bot.vc_pool.get(gid)
+    q  = bot.queues.get(gid, [])
+    if not vc or not vc.is_connected():
+        bot.vc_pool.pop(gid, None); return
+    if not q:
+        bot.now_playing[gid] = None; return
+
+    track = q.pop(0)
+    bot.now_playing[gid] = track
+
+    # Résoudre URL fraîche JUSTE avant de lancer FFmpeg
+    url = await _resolve_url(track)
+    if not url:
+        logger.error(f"[music] URL introuvable pour {track.get('title')}")
         if bot.queues.get(gid):
-            try: await next_track(gid)
-            except Exception: pass
+            await next_track(gid)
+        return
+
+    try:
+        src = discord.FFmpegPCMAudio(url, **FF)
+        vc.play(
+            discord.PCMVolumeTransformer(src, 0.5),
+            after=lambda err: asyncio.run_coroutine_threadsafe(
+                next_track(gid), bot.loop
+            )
+        )
+        logger.info(f"[music] Lecture: {track.get('title', '?')[:50]}")
+    except Exception as e:
+        logger.error(f"[music] Erreur FFmpeg: {e}")
+        if bot.queues.get(gid):
+            await asyncio.sleep(1)
+            await next_track(gid)
 
 # ══════════════════════════════════════════════
 #  ANTI-SPAM
